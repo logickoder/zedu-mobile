@@ -23,8 +23,9 @@ SKIP_LABEL=${SKIP_LABEL-review-org-only}
 base_sha=$(git rev-parse "$BASE_REF^{commit}")
 # Replayed commits get new IDs, so earlier deliveries are tracked by trailer, not by ancestry.
 delivered=$(git log --format=%B "$base_sha" | sed -n 's/^Upstream-Source: \([0-9a-f]\{40\}\)$/\1/p' | sort -u)
-# Unquoted paths (non-ASCII names) and no rename detection (a rename shows its deleted source).
-changed() { git -c core.quotePath=off diff --no-renames --name-only "$@"; }
+# NUL-delimited raw paths (git quotes names with quotes, backslashes or control characters even with
+# core.quotePath=off) and no rename detection (a rename shows its deleted source).
+changed() { git diff --no-renames --name-only -z "$@"; }
 excludes=$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$EXCLUDE_FILE" | grep -v '^$')
 
 is_excluded() {
@@ -72,12 +73,10 @@ for sha in $(git rev-list --reverse --no-merges "$base_sha..$SOURCE_REF"); do
   fi
 
   if ! git cherry-pick -n "$sha" >/dev/null 2>&1; then
-    conflicted=$(changed --diff-filter=U)
     real=""
-    while IFS= read -r f; do
-      [ -z "$f" ] && continue
+    while IFS= read -r -d '' f; do
       is_excluded "$f" || real+="$f "
-    done <<< "$conflicted"
+    done < <(changed --diff-filter=U)
     if [ -n "$real" ]; then
       git reset -q --hard
       echo "::error::Conflict replaying $short ($subject) by $author in: $real. Resolve by hand." >&2
@@ -85,9 +84,9 @@ for sha in $(git rev-list --reverse --no-merges "$base_sha..$SOURCE_REF"); do
     fi
   fi
 
-  while IFS= read -r f; do
-    [ -n "$f" ] && is_excluded "$f" && reset_path "$f"
-  done <<< "$(changed --cached; changed --diff-filter=U)"
+  while IFS= read -r -d '' f; do
+    if is_excluded "$f"; then reset_path "$f"; fi
+  done < <(changed --cached; changed --diff-filter=U)
 
   if git diff --cached --quiet; then
     git reset -q --hard
@@ -102,9 +101,9 @@ done
 
 # Safety gate: no excluded path may differ from the base.
 leaked=""
-while IFS= read -r f; do
-  [ -n "$f" ] && is_excluded "$f" && leaked+="$f "
-done <<< "$(changed "$base_sha" HEAD)"
+while IFS= read -r -d '' f; do
+  if is_excluded "$f"; then leaked+="$f "; fi
+done < <(changed "$base_sha" HEAD)
 if [ -n "$leaked" ]; then
   echo "::error::Excluded paths would reach upstream: $leaked" >&2
   exit 1
