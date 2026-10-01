@@ -8,9 +8,11 @@
 #   EXCLUDE_FILE   path list (default .github/upstream-exclude), read from the current checkout
 #   SKIP_LABEL     PR label whose commits are skipped (default review-org-only)
 #
-# Replays each non-merge commit in BASE_REF..SOURCE_REF in order, keeping author and message.
-# Commits from PRs with SKIP_LABEL are skipped; excluded paths are reset to the base version;
-# commits left empty are dropped. Fails on a real conflict, or if any excluded path differs from base.
+# Replays each non-merge commit in BASE_REF..SOURCE_REF in order, keeping author, date and message,
+# and adds an "Upstream-Source: <sha>" trailer. Commits whose trailer already appears in BASE_REF's
+# history were delivered by an earlier batch and are skipped, as are commits from PRs with SKIP_LABEL.
+# Excluded paths are reset to the base version; commits left empty are dropped. Fails on a real
+# conflict, or if any excluded path differs from base.
 # Writes a Markdown summary to batch-summary.md.
 set -euo pipefail
 
@@ -19,6 +21,10 @@ EXCLUDE_FILE=${EXCLUDE_FILE:-.github/upstream-exclude}
 SKIP_LABEL=${SKIP_LABEL-review-org-only}
 
 base_sha=$(git rev-parse "$BASE_REF^{commit}")
+# Replayed commits get new IDs, so earlier deliveries are tracked by trailer, not by ancestry.
+delivered=$(git log --format=%B "$base_sha" | sed -n 's/^Upstream-Source: \([0-9a-f]\{40\}\)$/\1/p' | sort -u)
+# Unquoted paths (non-ASCII names) and no rename detection (a rename shows its deleted source).
+changed() { git -c core.quotePath=off diff --no-renames --name-only "$@"; }
 excludes=$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$EXCLUDE_FILE" | grep -v '^$')
 
 is_excluded() {
@@ -43,12 +49,19 @@ reset_path() {
 }
 
 git switch -q -C "$OUT_BRANCH" "$base_sha"
+msg_file=$(mktemp)
+trap 'rm -f "$msg_file"' EXIT
 
-sent=() skipped=() empty=()
+sent=() skipped=() empty=() already=()
 for sha in $(git rev-list --reverse --no-merges "$base_sha..$SOURCE_REF"); do
   short=${sha:0:7}
   subject=$(git log -1 --format=%s "$sha")
   author=$(git log -1 --format=%an "$sha")
+
+  if grep -qx "$sha" <<< "$delivered"; then
+    already+=("$short $subject")
+    continue
+  fi
 
   if [ -n "$SKIP_LABEL" ]; then
     labels=$(gh api "repos/$REVIEW_REPO/commits/$sha/pulls" --jq '[.[].labels[].name] | join(",")')
@@ -59,7 +72,7 @@ for sha in $(git rev-list --reverse --no-merges "$base_sha..$SOURCE_REF"); do
   fi
 
   if ! git cherry-pick -n "$sha" >/dev/null 2>&1; then
-    conflicted=$(git diff --name-only --diff-filter=U)
+    conflicted=$(changed --diff-filter=U)
     real=""
     while IFS= read -r f; do
       [ -z "$f" ] && continue
@@ -74,14 +87,16 @@ for sha in $(git rev-list --reverse --no-merges "$base_sha..$SOURCE_REF"); do
 
   while IFS= read -r f; do
     [ -n "$f" ] && is_excluded "$f" && reset_path "$f"
-  done <<< "$(git diff --cached --name-only; git diff --name-only --diff-filter=U)"
+  done <<< "$(changed --cached; changed --diff-filter=U)"
 
   if git diff --cached --quiet; then
     git reset -q --hard
     empty+=("$short $subject")
     continue
   fi
-  git commit -q --no-verify -C "$sha"
+  git log -1 --format=%B "$sha" | git interpret-trailers --trailer "Upstream-Source: $sha" > "$msg_file"
+  git commit -q --no-verify -F "$msg_file" \
+    --author="$(git log -1 --format='%an <%ae>' "$sha")" --date="$(git log -1 --format=%aD "$sha")"
   sent+=("$short $subject ($author)")
 done
 
@@ -89,7 +104,7 @@ done
 leaked=""
 while IFS= read -r f; do
   [ -n "$f" ] && is_excluded "$f" && leaked+="$f "
-done <<< "$(git diff --name-only "$base_sha" HEAD)"
+done <<< "$(changed "$base_sha" HEAD)"
 if [ -n "$leaked" ]; then
   echo "::error::Excluded paths would reach upstream: $leaked" >&2
   exit 1
@@ -108,5 +123,8 @@ fi
   echo
   echo "**Dropped, review-org changes only (${#empty[@]}):**"
   for s in "${empty[@]+"${empty[@]}"}"; do echo "- $s"; done
+  echo
+  echo "**Already delivered in an earlier batch (${#already[@]}):**"
+  for s in "${already[@]+"${already[@]}"}"; do echo "- $s"; done
 } > batch-summary.md
 echo "sent=${#sent[@]}"

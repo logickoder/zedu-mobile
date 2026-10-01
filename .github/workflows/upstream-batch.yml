@@ -25,13 +25,17 @@ jobs:
     name: Build upstream batch
     if: vars.UPSTREAM_REPO != ''
     runs-on: ubuntu-latest
+    # bash (not the default sh-style "bash -e") enables pipefail, so a failing script isn't masked by tee.
+    defaults:
+      run:
+        shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
       UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO }}
       UPSTREAM_BRANCH: ${{ vars.UPSTREAM_BRANCH || 'central-staging' }}
       SOURCE: ${{ inputs.source }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -70,8 +74,9 @@ jobs:
             exit 0
           fi
           git push -q origin "$BRANCH"
+          upstream_branch=$(jq -rn --arg v "$UPSTREAM_BRANCH" '$v|@uri')
           title="Batch from zedu-hng: $SENT ticket(s)"
-          url="https://github.com/$UPSTREAM_REPO/compare/$UPSTREAM_BRANCH...$GITHUB_REPOSITORY_OWNER:${GITHUB_REPOSITORY#*/}:$BRANCH?expand=1&title=$(jq -rn --arg v "$title" '$v|@uri')&body=$(jq -sRr @uri < "$summary")"
+          url="https://github.com/$UPSTREAM_REPO/compare/$upstream_branch...$GITHUB_REPOSITORY_OWNER:${GITHUB_REPOSITORY#*/}:$BRANCH?expand=1&title=$(jq -rn --arg v "$title" '$v|@uri')&body=$(jq -sRr @uri < "$summary")"
           {
             cat "$summary"
             echo
