@@ -36,7 +36,8 @@ jobs:
           [ "$behind" -gt 0 ] || exit 0
           open=$(gh pr list --repo "$REPO" --base "$TARGET" --head "$TARGET" --state open --json number --jq 'length')
           if [ "$open" -gt 0 ]; then echo "Sync PR already open"; exit 0; fi
-          gh pr create --repo "$REPO" --base "$TARGET" --head "${UPSTREAM_REPO%%/*}:$TARGET" \
+          # The head is upstream's branch; this token can't grant its maintainers edit rights.
+          gh pr create --repo "$REPO" --base "$TARGET" --head "${UPSTREAM_REPO%%/*}:$TARGET" --no-maintainer-edit \
             --title "chore: sync $TARGET from $UPSTREAM_REPO" \
             --body "Automated sync of \`$UPSTREAM_REPO:$TARGET\` (${upstream_sha:0:7}). **Merge with a merge commit, not squash.**"
 
