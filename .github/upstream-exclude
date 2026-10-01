@@ -1,0 +1,9 @@
+# Paths that exist only for the zedu-hng review org and never go to zeduchat in upstream batches.
+# One path per line. A trailing "/" means everything under that directory.
+# Whole review-org commits are skipped via the `review-org-only` PR label; this list is the safety net.
+.github/
+AGENTS.md
+CONTRIBUTING.md
+jest.config.js
+jest.setup.js
+__mocks__/

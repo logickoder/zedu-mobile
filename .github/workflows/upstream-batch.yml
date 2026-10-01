@@ -1,0 +1,79 @@
+name: Upstream batch
+
+# Builds batch/<date> from zeduchat's branch plus every ticket commit merged here since, minus
+# review-org changes (PRs labelled review-org-only, and paths in .github/upstream-exclude).
+# Pushes the branch here and links a prefilled PR to zeduchat; a reviewer opens it.
+# Run from the Actions tab after promoting dev -> central-staging.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Review-org branch to send
+        default: central-staging
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: upstream-batch
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    name: Build upstream batch
+    if: vars.UPSTREAM_REPO != ''
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO }}
+      UPSTREAM_BRANCH: ${{ vars.UPSTREAM_BRANCH || 'central-staging' }}
+      SOURCE: ${{ inputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch branches
+        run: |
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch -q upstream "$UPSTREAM_BRANCH"
+          git fetch -q origin "$SOURCE"
+
+      # The batch base (zeduchat) doesn't contain the script or the exclude list, so run copies.
+      - name: Build batch
+        id: batch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp .github/upstream-exclude "$RUNNER_TEMP/upstream-exclude"
+          cp .github/scripts/upstream-batch.sh "$RUNNER_TEMP/upstream-batch.sh"
+          branch="batch/$(date -u +%Y%m%d-%H%M)"
+          BASE_REF="upstream/$UPSTREAM_BRANCH" SOURCE_REF="origin/$SOURCE" REVIEW_REPO="$GITHUB_REPOSITORY" \
+            OUT_BRANCH="$branch" EXCLUDE_FILE="$RUNNER_TEMP/upstream-exclude" \
+            bash "$RUNNER_TEMP/upstream-batch.sh" | tee "$RUNNER_TEMP/out.txt"
+          mv batch-summary.md "$RUNNER_TEMP/batch-summary.md"
+          {
+            echo "branch=$branch"
+            grep '^sent=' "$RUNNER_TEMP/out.txt"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push and link PR
+        env:
+          BRANCH: ${{ steps.batch.outputs.branch }}
+          SENT: ${{ steps.batch.outputs.sent }}
+        run: |
+          summary="$RUNNER_TEMP/batch-summary.md"
+          if [ "$SENT" -eq 0 ]; then
+            { cat "$summary"; echo; echo "Nothing to send: no ticket commits since the last batch."; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git push -q origin "$BRANCH"
+          title="Batch from zedu-hng: $SENT ticket(s)"
+          url="https://github.com/$UPSTREAM_REPO/compare/$UPSTREAM_BRANCH...$GITHUB_REPOSITORY_OWNER:${GITHUB_REPOSITORY#*/}:$BRANCH?expand=1&title=$(jq -rn --arg v "$title" '$v|@uri')&body=$(jq -sRr @uri < "$summary")"
+          {
+            cat "$summary"
+            echo
+            echo "**[Open the PR to \`$UPSTREAM_REPO:$UPSTREAM_BRANCH\`]($url)** (prefilled; merge with a merge commit, not squash)."
+          } >> "$GITHUB_STEP_SUMMARY"
