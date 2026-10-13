@@ -941,3 +941,4 @@ export const fileManagementStyles = createFileManagementStyles({
   statusBarStyle: 'dark-content',
   statusBarBackground: '#FFFFFF',
 });
+// device-session e2e test, do not merge
