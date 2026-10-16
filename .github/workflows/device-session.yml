@@ -30,7 +30,7 @@ jobs:
       issues: write
       pull-requests: write
       statuses: read
-    uses: zedu-hng/zedu-ci/.github/workflows/device-session.yml@0bdd745a90e8ae01d7ebe5291d3e4b796758edb2
+    uses: zedu-hng/zedu-ci/.github/workflows/device-session.yml@67a7095475744c9976645efd77b54f1c0dcf1e82
     with:
       platform: android
       slot_url: https://android.preview.groups.zedu.chat
